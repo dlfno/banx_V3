@@ -101,69 +101,114 @@ export default function MeetingPage() {
   }
 
   function handleEvent(ev: WsEvent) {
+    if (ev.type === "vote") {
+      setVotes((vs) => {
+        const filtered = vs.filter((v) => v.agent_id !== ev.agent_id);
+        return [...filtered, { agent_id: ev.agent_id, agent: ev.agent, decision_bps: ev.decision_bps, rationale: ev.rationale }];
+      });
+      return;
+    }
+    if (ev.type === "decision") {
+      setDecision(ev.decision_bps);
+      return;
+    }
+    if (ev.type === "done") {
+      setRunning(false);
+      return;
+    }
+    if (ev.type === "minutes") {
+      setMinutes(ev.content);
+    }
     setBubbles((prev) => {
-      const next = [...prev];
-      const last = next[next.length - 1];
+      const lastIdx = prev.length - 1;
+      const last = prev[lastIdx];
+      const replaceLast = (patch: Partial<Bubble>) => {
+        const updated = [...prev];
+        updated[lastIdx] = { ...last, ...patch };
+        return updated;
+      };
       if (ev.type === "phase") {
-        next.push({
-          id: `mod-${Date.now()}`,
-          role: "moderator",
-          content: ev.content,
-          phase: ev.phase,
-          trace: [],
-        });
-      } else if (ev.type === "turn_start") {
-        next.push({
-          id: `a-${Date.now()}`,
-          agentId: ev.agent_id,
-          role: "assistant",
-          content: "",
-          phase: ev.phase,
-          trace: [],
-          pending: true,
-        });
-      } else if (ev.type === "token") {
-        if (last && last.pending) last.content += ev.delta;
-      } else if (ev.type === "tool_start") {
-        if (last && last.pending) last.trace.push({ id: ev.id, name: ev.name, args: ev.args });
-      } else if (ev.type === "tool_end") {
-        if (last && last.pending) {
-          const t = last.trace.find((x) => x.id === ev.id);
-          if (t) t.output = ev.output;
-        }
-      } else if (ev.type === "final") {
-        if (last && last.pending) {
-          last.pending = false;
-          if (!last.content && ev.text) last.content = ev.text;
-        }
-      } else if (ev.type === "vote") {
-        setVotes((vs) => {
-          const filtered = vs.filter((v) => v.agent_id !== ev.agent_id);
-          return [...filtered, { agent_id: ev.agent_id, agent: ev.agent, decision_bps: ev.decision_bps, rationale: ev.rationale }];
-        });
-      } else if (ev.type === "decision") {
-        setDecision(ev.decision_bps);
-      } else if (ev.type === "minutes") {
-        setMinutes(ev.content);
-        next.push({
-          id: `sec-${Date.now()}`,
-          role: "secretario",
-          content: ev.content,
-          phase: "minutes",
-          trace: [],
-        });
-      } else if (ev.type === "done") {
-        setRunning(false);
-      } else if (ev.type === "error") {
-        next.push({
-          id: `err-${Date.now()}`,
-          role: "moderator",
-          content: `⚠️ ${ev.message}`,
-          trace: [],
-        });
-        setRunning(false);
+        return [
+          ...prev,
+          {
+            id: `mod-${Date.now()}`,
+            role: "moderator",
+            content: ev.content,
+            phase: ev.phase,
+            trace: [],
+          },
+        ];
       }
-      return next;
+      if (ev.type === "turn_start") {
+        return [
+          ...prev,
+          {
+            id: `a-${Date.now()}`,
+            agentId: ev.agent_id,
+            role: "assistant",
+            content: "",
+            phase: ev.phase,
+            trace: [],
+            pending: true,
+          },
+        ];
+      }
+      if (ev.type === "token") {
+        if (last && last.pending) {
+          return replaceLast({ content: last.content + ev.delta });
+        }
+        return prev;
+      }
+      if (ev.type === "tool_start") {
+        if (last && last.pending) {
+          return replaceLast({
+            trace: [...last.trace, { id: ev.id, name: ev.name, args: ev.args }],
+          });
+        }
+        return prev;
+      }
+      if (ev.type === "tool_end") {
+        if (last && last.pending) {
+          return replaceLast({
+            trace: last.trace.map((t) => (t.id === ev.id ? { ...t, output: ev.output } : t)),
+          });
+        }
+        return prev;
+      }
+      if (ev.type === "final") {
+        if (last && last.pending) {
+          return replaceLast({
+            pending: false,
+            content: last.content || ev.text || "",
+          });
+        }
+        return prev;
+      }
+      if (ev.type === "minutes") {
+        return [
+          ...prev,
+          {
+            id: `sec-${Date.now()}`,
+            role: "secretario",
+            content: ev.content,
+            phase: "minutes",
+            trace: [],
+          },
+        ];
+      }
+      if (ev.type === "error") {
+        setRunning(false);
+        return [
+          ...prev,
+          {
+            id: `err-${Date.now()}`,
+            role: "moderator",
+            content: `⚠️ ${ev.message}`,
+            trace: [],
+          },
+        ];
+      }
+      return prev;
     });
   }
 

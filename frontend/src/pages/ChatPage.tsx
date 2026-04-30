@@ -17,22 +17,24 @@ type Bubble = {
 };
 
 export default function ChatPage() {
-  const { agentId } = useParams();
+  const { agentId, sessionId: sessionIdParam } = useParams();
   const navigate = useNavigate();
   const agents = useQuery({ queryKey: ["agents"], queryFn: api.listAgents });
 
-  const selectedAgent = useMemo<Agent | undefined>(() => {
-    if (!agents.data) return undefined;
-    if (agentId) return agents.data.find((a) => String(a.id) === agentId);
-    return agents.data[0];
-  }, [agents.data, agentId]);
-
   const [sessionId, setSessionId] = useState<number | null>(null);
+  const [sessionAgentId, setSessionAgentId] = useState<number | null>(null);
   const [bubbles, setBubbles] = useState<Bubble[]>([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const scrollerRef = useRef<HTMLDivElement | null>(null);
+
+  const selectedAgent = useMemo<Agent | undefined>(() => {
+    if (!agents.data) return undefined;
+    if (sessionAgentId) return agents.data.find((a) => a.id === sessionAgentId);
+    if (agentId) return agents.data.find((a) => String(a.id) === agentId);
+    return agents.data[0];
+  }, [agents.data, agentId, sessionAgentId]);
 
   const memory = useQuery<MemoryItem[]>({
     queryKey: ["memory", selectedAgent?.id],
@@ -40,17 +42,16 @@ export default function ChatPage() {
     enabled: !!selectedAgent,
   });
 
-  // (Re)create session when agent changes
+  // Mode A: load existing session from URL
   useEffect(() => {
-    if (!selectedAgent) return;
+    if (!sessionIdParam) return;
+    const sid = Number(sessionIdParam);
     let cancelled = false;
     (async () => {
-      const session = await api.createChatSession(selectedAgent.id);
-      if (cancelled) return;
-      setSessionId(session.id);
-      setBubbles([]);
       try {
-        const prior: Message[] = await api.listChatMessages(session.id);
+        const prior: Message[] = await api.listChatMessages(sid);
+        if (cancelled) return;
+        setSessionId(sid);
         setBubbles(
           prior.map((m) => ({
             id: `db-${m.id}`,
@@ -60,16 +61,35 @@ export default function ChatPage() {
             agentId: m.agent_id ?? undefined,
           })),
         );
+        const firstAgentMsg = prior.find((m) => m.agent_id != null);
+        if (firstAgentMsg?.agent_id != null) setSessionAgentId(firstAgentMsg.agent_id);
       } catch {
-        /* empty session */
+        /* sesión no encontrada */
       }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionIdParam]);
+
+  // Mode B: create new session when agent changes (no :sessionId in URL)
+  useEffect(() => {
+    if (sessionIdParam) return;
+    if (!selectedAgent) return;
+    let cancelled = false;
+    (async () => {
+      const session = await api.createChatSession(selectedAgent.id);
+      if (cancelled) return;
+      setSessionId(session.id);
+      setSessionAgentId(selectedAgent.id);
+      setBubbles([]);
     })();
     return () => {
       cancelled = true;
       wsRef.current?.close();
       wsRef.current = null;
     };
-  }, [selectedAgent?.id]);
+  }, [sessionIdParam, selectedAgent?.id]);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -84,46 +104,71 @@ export default function ChatPage() {
 
   function handleEvent(ev: WsEvent) {
     setBubbles((prev) => {
-      const next = [...prev];
-      const last = next[next.length - 1];
+      const lastIdx = prev.length - 1;
+      const last = prev[lastIdx];
+      const replaceLast = (patch: Partial<Bubble>) => {
+        const updated = [...prev];
+        updated[lastIdx] = { ...last, ...patch };
+        return updated;
+      };
       if (ev.type === "turn_start") {
-        next.push({
-          id: `assistant-${Date.now()}`,
-          role: "assistant",
-          content: "",
-          trace: [],
-          pending: true,
-          agentId: ev.agent_id,
-        });
-      } else if (ev.type === "token") {
-        if (last && last.role === "assistant" && last.pending) {
-          last.content += ev.delta;
-        }
-      } else if (ev.type === "tool_start") {
-        if (last && last.role === "assistant" && last.pending) {
-          last.trace.push({ id: ev.id, name: ev.name, args: ev.args });
-        }
-      } else if (ev.type === "tool_end") {
-        if (last && last.role === "assistant" && last.pending) {
-          const t = last.trace.find((x) => x.id === ev.id);
-          if (t) t.output = ev.output;
-        }
-      } else if (ev.type === "final") {
-        if (last && last.role === "assistant" && last.pending) {
-          last.pending = false;
-          if (!last.content && ev.text) last.content = ev.text;
-        }
-        setSending(false);
-      } else if (ev.type === "error") {
-        next.push({
-          id: `error-${Date.now()}`,
-          role: "assistant",
-          content: `⚠️ ${ev.message}`,
-          trace: [],
-        });
-        setSending(false);
+        return [
+          ...prev,
+          {
+            id: `assistant-${Date.now()}`,
+            role: "assistant",
+            content: "",
+            trace: [],
+            pending: true,
+            agentId: ev.agent_id,
+          },
+        ];
       }
-      return next;
+      if (ev.type === "token") {
+        if (last && last.role === "assistant" && last.pending) {
+          return replaceLast({ content: last.content + ev.delta });
+        }
+        return prev;
+      }
+      if (ev.type === "tool_start") {
+        if (last && last.role === "assistant" && last.pending) {
+          return replaceLast({
+            trace: [...last.trace, { id: ev.id, name: ev.name, args: ev.args }],
+          });
+        }
+        return prev;
+      }
+      if (ev.type === "tool_end") {
+        if (last && last.role === "assistant" && last.pending) {
+          return replaceLast({
+            trace: last.trace.map((t) => (t.id === ev.id ? { ...t, output: ev.output } : t)),
+          });
+        }
+        return prev;
+      }
+      if (ev.type === "final") {
+        setSending(false);
+        if (last && last.role === "assistant" && last.pending) {
+          return replaceLast({
+            pending: false,
+            content: last.content || ev.text || "",
+          });
+        }
+        return prev;
+      }
+      if (ev.type === "error") {
+        setSending(false);
+        return [
+          ...prev,
+          {
+            id: `error-${Date.now()}`,
+            role: "assistant",
+            content: `⚠️ ${ev.message}`,
+            trace: [],
+          },
+        ];
+      }
+      return prev;
     });
   }
 

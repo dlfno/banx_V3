@@ -1,12 +1,29 @@
-import type { Agent, ChatSession, MemoryItem, Meeting, MeetingSummary, Message, WsEvent } from "./types";
+import { getStoredToken } from "./auth";
+import type {
+  Agent,
+  ChatSession,
+  ChatSessionSummary,
+  MemoryItem,
+  Meeting,
+  MeetingSummary,
+  Message,
+  WsEvent,
+} from "./types";
 
 const API_BASE = "/api";
 
 async function jsonFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...init,
-    headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
-  });
+  const token = getStoredToken();
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...((init?.headers as Record<string, string>) || {}),
+  };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const res = await fetch(`${API_BASE}${path}`, { ...init, headers });
+  if (res.status === 401) {
+    window.dispatchEvent(new Event("auth:unauthorized"));
+    throw new Error("No autorizado");
+  }
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`HTTP ${res.status}: ${text}`);
@@ -20,6 +37,7 @@ export const api = {
 
   createChatSession: (agent_id: number) =>
     jsonFetch<ChatSession>("/chat/sessions", { method: "POST", body: JSON.stringify({ agent_id }) }),
+  listChatSessions: () => jsonFetch<ChatSessionSummary[]>("/chat/sessions"),
   listChatMessages: (sid: number) => jsonFetch<Message[]>(`/chat/sessions/${sid}/messages`),
 
   createMeeting: (topic: string, rounds: number, agent_ids?: number[]) =>
@@ -33,7 +51,10 @@ export const api = {
 
 function wsUrl(path: string): string {
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  return `${proto}://${location.host}/ws${path}`;
+  const token = getStoredToken();
+  const sep = path.includes("?") ? "&" : "?";
+  const auth = token ? `${sep}token=${encodeURIComponent(token)}` : "";
+  return `${proto}://${location.host}/api${path}${auth}`;
 }
 
 export function openChatSocket(sessionId: number, onEvent: (e: WsEvent) => void): WebSocket {

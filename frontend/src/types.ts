@@ -7,6 +7,12 @@ export type Agent = {
   avatar: string;
 };
 
+export type User = {
+  id: number;
+  username: string;
+  display_name: string;
+};
+
 export type MemoryItem = {
   id: number;
   kind: "fact" | "stance" | "meeting_summary";
@@ -19,6 +25,18 @@ export type ChatSession = {
   id: number;
   agent_id: number;
   started_at: string;
+  created_by: User;
+};
+
+export type ChatSessionSummary = {
+  id: number;
+  agent_id: number;
+  agent_name: string;
+  agent_avatar: string;
+  started_at: string;
+  last_message_at: string | null;
+  message_count: number;
+  created_by: User;
 };
 
 export type Message = {
@@ -44,6 +62,7 @@ export type Meeting = {
   ended_at: string | null;
   decision_bps: number | null;
   minutes_md: string | null;
+  created_by: User;
   votes: Vote[];
   messages: Message[];
 };
@@ -54,6 +73,7 @@ export type MeetingSummary = {
   started_at: string;
   ended_at: string | null;
   decision_bps: number | null;
+  created_by: User;
 };
 
 export type WsEvent =
