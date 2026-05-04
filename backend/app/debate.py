@@ -67,7 +67,8 @@ async def run_meeting(
             transcript=transcript,
             emit=emit,
         )
-        transcript.append(f"[{agent.display_name}] {text}")
+        entry = text.strip() or f"[{agent.display_name} no emitió posición inicial]"
+        transcript.append(f"[{agent.display_name}] {entry}")
 
     # Phase: cross-talk rounds
     for r in range(rounds):
@@ -85,7 +86,8 @@ async def run_meeting(
                 transcript=transcript,
                 emit=emit,
             )
-            transcript.append(f"[{agent.display_name}] {text}")
+            entry = text.strip() or f"[{agent.display_name} no emitió posición en esta ronda]"
+            transcript.append(f"[{agent.display_name}] {entry}")
 
     # Phase: voting
     votes: list[Vote] = []
@@ -161,6 +163,14 @@ async def _agent_turn(
         await emit(ev)
 
     result = await run_agent(model, convo, emit=relay)
+    if not result.text.strip():
+        log.warning(
+            "Respuesta vacía de '%s' en fase '%s'; reintentando",
+            agent.display_name,
+            phase,
+        )
+        result = await run_agent(model, convo, emit=relay)
+
     _persist_message(
         session,
         meeting_id,

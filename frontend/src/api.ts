@@ -47,6 +47,8 @@ export const api = {
     }),
   listMeetings: () => jsonFetch<MeetingSummary[]>("/meetings"),
   getMeeting: (id: number) => jsonFetch<Meeting>(`/meetings/${id}`),
+  deleteMeeting: (id: number) =>
+    jsonFetch<{ deleted: boolean }>(`/meetings/${id}`, { method: "DELETE" }),
 };
 
 function wsUrl(path: string): string {

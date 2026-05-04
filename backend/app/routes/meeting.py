@@ -75,6 +75,21 @@ def get_meeting(
     return _meeting_out(session, meeting)
 
 
+@router.delete("/{meeting_id}", status_code=200)
+def delete_meeting(
+    meeting_id: int,
+    _user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+):
+    meeting = session.get(Meeting, meeting_id)
+    if meeting is None:
+        raise HTTPException(404, "Junta no encontrada")
+    _active_runs.pop(meeting_id, None)
+    session.delete(meeting)
+    session.commit()
+    return {"deleted": True}
+
+
 @router.websocket("/ws/{meeting_id}")
 async def meeting_ws(ws: WebSocket, meeting_id: int, token: str | None = Query(None)):
     user = await authenticate_ws(ws, token)

@@ -1,4 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api";
 
@@ -10,6 +11,14 @@ function fmtDate(iso: string | null | undefined): string {
 export default function HomePage() {
   const meetings = useQuery({ queryKey: ["meetings"], queryFn: api.listMeetings });
   const chats = useQuery({ queryKey: ["chat-sessions"], queryFn: api.listChatSessions });
+  const [confirmId, setConfirmId] = useState<number | null>(null);
+  const deleteMutation = useMutation({
+    mutationFn: api.deleteMeeting,
+    onSuccess: () => {
+      meetings.refetch();
+      setConfirmId(null);
+    },
+  });
 
   return (
     <div className="max-w-6xl mx-auto p-6">
@@ -50,14 +59,14 @@ export default function HomePage() {
           )}
           <ul className="space-y-2">
             {meetings.data?.map((m) => (
-              <li key={m.id}>
+              <li key={m.id} className="relative">
                 <Link
                   to={`/meeting/${m.id}`}
                   className="block rounded border border-stone-200 bg-white p-3 hover:border-stone-400"
                 >
                   <div className="flex items-center justify-between gap-2">
                     <span className="font-medium truncate">{m.topic}</span>
-                    <span className="font-mono text-sm text-banxico-700">
+                    <span className={`font-mono text-sm ${m.decision_bps === null ? "text-amber-600" : "text-banxico-700"}`}>
                       {m.decision_bps !== null
                         ? (m.decision_bps > 0 ? `+${m.decision_bps}` : `${m.decision_bps}`) + " bps"
                         : "en curso"}
@@ -69,6 +78,34 @@ export default function HomePage() {
                     <span>creado por <span className="font-medium text-stone-700">{m.created_by.display_name}</span></span>
                   </div>
                 </Link>
+                {m.decision_bps === null && (
+                  confirmId === m.id ? (
+                    <div className="absolute inset-0 rounded border border-red-300 bg-red-50 flex items-center justify-center gap-3 text-sm">
+                      <span className="text-red-700 font-medium">¿Eliminar esta junta?</span>
+                      <button
+                        onClick={() => deleteMutation.mutate(m.id)}
+                        disabled={deleteMutation.isPending}
+                        className="px-3 py-1 rounded bg-red-600 text-white hover:bg-red-700 disabled:opacity-50"
+                      >
+                        {deleteMutation.isPending ? "…" : "Sí, eliminar"}
+                      </button>
+                      <button
+                        onClick={() => setConfirmId(null)}
+                        className="px-3 py-1 rounded border border-stone-300 bg-white hover:bg-stone-50"
+                      >
+                        Cancelar
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={(e) => { e.preventDefault(); setConfirmId(m.id); }}
+                      title="Descartar junta en curso"
+                      className="absolute top-2 right-2 w-6 h-6 flex items-center justify-center rounded-full text-stone-400 hover:bg-red-100 hover:text-red-600 transition text-xs leading-none"
+                    >
+                      ✕
+                    </button>
+                  )
+                )}
               </li>
             ))}
           </ul>

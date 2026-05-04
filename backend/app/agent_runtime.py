@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from typing import AsyncIterator, Awaitable, Callable, Optional
+
+log = logging.getLogger(__name__)
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage, SystemMessage, ToolMessage
@@ -60,6 +63,7 @@ async def run_agent(
                                 await emit({"type": "token", "delta": text})
 
         if gathered is None:
+            log.warning("run_agent: astream no produjo AIMessageChunk en iter %d; abortando loop", _)
             break
 
         ai_msg = AIMessage(
@@ -98,11 +102,13 @@ async def run_agent(
                 await emit({"type": "tool_end", "name": name, "id": tool_call_id, "output": output})
             convo.append(ToolMessage(content=output, tool_call_id=tool_call_id))
     else:
-        # Hit max_iters without natural stop; capture last AI text if any.
+        # Hit max_iters without natural stop; find last AIMessage with non-empty text.
         for m in reversed(convo):
             if isinstance(m, AIMessage):
-                final_text = _content_text(m.content)
-                break
+                candidate = _content_text(m.content)
+                if candidate.strip():
+                    final_text = candidate
+                    break
 
     if emit:
         await emit({"type": "final", "text": final_text})
