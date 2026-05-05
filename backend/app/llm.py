@@ -19,7 +19,7 @@ def build_chat_model(streaming: bool = True, temperature: float = 0.4) -> BaseCh
             streaming=streaming,
             temperature=temperature,
             max_tokens=2048,
-            timeout=60,
+            timeout=300,
         )
 
     if provider == "openrouter":
@@ -34,7 +34,7 @@ def build_chat_model(streaming: bool = True, temperature: float = 0.4) -> BaseCh
             streaming=streaming,
             temperature=temperature,
             max_tokens=2048,
-            timeout=60,
+            timeout=300,
             default_headers={
                 "HTTP-Referer": "http://localhost:5173",
                 "X-Title": "Banxico Sim",

@@ -7,7 +7,7 @@ import re
 from datetime import datetime
 from typing import Awaitable, Callable
 
-AGENT_TURN_TIMEOUT = 90.0  # seconds per LLM call attempt
+AGENT_TURN_TIMEOUT = 900.0  # 15 minutos por turno de agente
 
 log = logging.getLogger(__name__)
 
