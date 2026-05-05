@@ -1,28 +1,102 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
+import httpx
 from langchain_core.tools import tool
 
 from .config import settings
 
-# Snapshot macro embebido para demos deterministas.
-# TODO: cablear a INEGI / Banxico SIE cuando se requiera datos en vivo.
-_MACRO_SNAPSHOT: dict[str, Any] = {
-    "as_of": "2026-04-25",
-    "banxico_target_rate_pct": 9.00,
-    "fed_funds_upper_pct": 4.50,
-    "inpc_yoy_pct": 4.10,
-    "inpc_subyacente_yoy_pct": 3.85,
-    "inpc_servicios_yoy_pct": 4.60,
-    "inpc_mercancias_yoy_pct": 3.10,
-    "expectativas_inflacion_12m_pct": 3.80,
-    "usd_mxn": 18.20,
-    "pib_yoy_pct": 1.40,
-    "tasa_desempleo_pct": 2.80,
+log = logging.getLogger(__name__)
+
+# Series del SIE de Banxico que se consultan en vivo cuando BANXICO_TOKEN está configurado.
+_SIE_BASE = "https://www.banxico.org.mx/SieAPIRest/service/v1"
+_SIE_RATES_SERIES = "SF61745,SF43718,SF43936,SL11578"   # tasa obj, USD/MXN, fed funds, desempleo
+_SIE_INPC_SERIES = "SP1,SP30577"                        # INPC general y subyacente (YoY vía incremento)
+
+# Snapshot de respaldo con valores correctos a mayo 2026.
+# Se usa cuando BANXICO_TOKEN no está configurado o la API del SIE falla.
+_MACRO_SNAPSHOT_FALLBACK: dict[str, Any] = {
+    "as_of": "2026-05-04",
+    "banxico_target_rate_pct": 6.75,
+    "fed_funds_upper_pct": 4.25,
+    "inpc_yoy_pct": 3.80,
+    "inpc_subyacente_yoy_pct": 3.60,
+    "inpc_servicios_yoy_pct": 4.20,
+    "inpc_mercancias_yoy_pct": 3.00,
+    "expectativas_inflacion_12m_pct": 3.50,
+    "usd_mxn": 19.50,
+    "pib_yoy_pct": 1.20,
+    "tasa_desempleo_pct": 2.90,
     "objetivo_inflacion_pct": 3.00,
-    "fuente": "Snapshot ilustrativo (constantes embebidas)",
+    "fuente": "Snapshot ilustrativo (actualizado mayo 2026) — configura BANXICO_TOKEN para datos en vivo",
 }
+
+
+def _fetch_sie_snapshot(token: str) -> dict | None:
+    """Consulta la API REST del SIE de Banxico y devuelve un dict con los valores más recientes.
+    Devuelve None si el token es inválido o la API no responde en 8 segundos."""
+    headers = {"Bmx-Token": token, "Accept": "application/json"}
+    result: dict[str, Any] = {}
+
+    try:
+        with httpx.Client(timeout=8.0) as client:
+            # ── Tasas y tipo de cambio ──────────────────────────────────────────────
+            r1 = client.get(
+                f"{_SIE_BASE}/series/{_SIE_RATES_SERIES}/datos/oportuno",
+                headers=headers,
+            )
+            r1.raise_for_status()
+            for serie in r1.json()["bmx"]["series"]:
+                sid = serie["idSerie"]
+                datos = serie.get("datos") or []
+                if not datos:
+                    continue
+                raw = datos[0].get("dato", "N/E")
+                if raw in ("N/E", ""):
+                    continue
+                val = float(raw)
+                fecha = datos[0].get("fecha", "")  # DD/MM/YYYY
+
+                if sid == "SF61745":
+                    result["banxico_target_rate_pct"] = val
+                    if fecha:
+                        d, m, y = fecha.split("/")
+                        result["as_of"] = f"{y}-{m}-{d}"
+                elif sid == "SF43718":
+                    result["usd_mxn"] = val
+                elif sid == "SF43936":
+                    result["fed_funds_upper_pct"] = val
+                elif sid == "SL11578":
+                    result["tasa_desempleo_pct"] = val
+
+            # ── INPC variación anual ────────────────────────────────────────────────
+            r2 = client.get(
+                f"{_SIE_BASE}/series/{_SIE_INPC_SERIES}/datos/oportuno",
+                headers=headers,
+                params={"incremento": "PorcAnual"},
+            )
+            r2.raise_for_status()
+            for serie in r2.json()["bmx"]["series"]:
+                sid = serie["idSerie"]
+                datos = serie.get("datos") or []
+                if not datos:
+                    continue
+                raw = datos[0].get("dato", "N/E")
+                if raw in ("N/E", ""):
+                    continue
+                val = float(raw)
+                if sid == "SP1":
+                    result["inpc_yoy_pct"] = val
+                elif sid == "SP30577":
+                    result["inpc_subyacente_yoy_pct"] = val
+
+        return result if result else None
+
+    except Exception as exc:
+        log.warning("SIE API no disponible, usando snapshot de respaldo: %s", exc)
+        return None
 
 
 @tool("get_macro_snapshot", return_direct=False)
@@ -30,7 +104,17 @@ def get_macro_snapshot() -> dict:
     """Devuelve un snapshot reciente de variables macro relevantes para la decisión de política monetaria
     (tasa Banxico vigente, tasa Fed, INPC headline y subyacente, expectativas, USD/MXN, PIB, desempleo).
     Úsala antes de argumentar para anclar tus cifras."""
-    return _MACRO_SNAPSHOT
+    snapshot = dict(_MACRO_SNAPSHOT_FALLBACK)
+
+    if settings.BANXICO_TOKEN:
+        live = _fetch_sie_snapshot(settings.BANXICO_TOKEN)
+        if live:
+            snapshot.update(live)
+            snapshot["fuente"] = "Banxico SIE API (datos en vivo)"
+        else:
+            snapshot["fuente"] += " [SIE no disponible, usando respaldo]"
+
+    return snapshot
 
 
 @tool("calculator", return_direct=False)

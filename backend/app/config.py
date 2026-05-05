@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str = ""
     OPENROUTER_API_KEY: str = ""
     TAVILY_API_KEY: str = ""
+    BANXICO_TOKEN: str = ""
     DATABASE_URL: str = "sqlite:///./banxico.db"
     CORS_ORIGINS: str = "http://localhost:5173"
     JWT_SECRET: str = "dev-only-change-me"
