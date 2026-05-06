@@ -15,22 +15,55 @@ _SIE_BASE = "https://www.banxico.org.mx/SieAPIRest/service/v1"
 _SIE_RATES_SERIES = "SF61745,SF43718,SF43936,SL11578"   # tasa obj, USD/MXN, fed funds, desempleo
 _SIE_INPC_SERIES = "SP1,SP30577"                        # INPC general y subyacente (YoY vía incremento)
 
-# Snapshot de respaldo con valores correctos a mayo 2026.
+# Snapshot de respaldo con valores observados al 5 de mayo de 2026.
 # Se usa cuando BANXICO_TOKEN no está configurado o la API del SIE falla.
 _MACRO_SNAPSHOT_FALLBACK: dict[str, Any] = {
-    "as_of": "2026-05-04",
+    "as_of": "2026-05-05",
+
+    # Banxico — última decisión 26/mar/2026 (recorte sorpresa a 6.75 %).
+    # Se anticipa un posible recorte adicional a 6.50 % en la reunión de mayo.
     "banxico_target_rate_pct": 6.75,
-    "fed_funds_upper_pct": 4.25,
-    "inpc_yoy_pct": 3.80,
-    "inpc_subyacente_yoy_pct": 3.60,
-    "inpc_servicios_yoy_pct": 4.20,
-    "inpc_mercancias_yoy_pct": 3.00,
-    "expectativas_inflacion_12m_pct": 3.50,
-    "usd_mxn": 19.50,
-    "pib_yoy_pct": 1.20,
-    "tasa_desempleo_pct": 2.90,
+
+    # Fed — rango objetivo mantenido en 3.50–3.75 % en reunión del 29/abr/2026.
+    "fed_funds_upper_pct": 3.75,
+
+    # INPC general anual — marzo 2026 (dato mensual más reciente, INEGI 9/abr/2026).
+    # 1Q-abril 2026 (quincenal) ya marcó 4.53 %; dato mensual de abril se publica 7/mayo.
+    "inpc_yoy_pct": 4.59,
+
+    # Subyacente anual — marzo 2026 (INEGI).
+    "inpc_subyacente_yoy_pct": 4.45,
+
+    # Servicios anual — marzo 2026 (INEGI, cuadro 1).
+    "inpc_servicios_yoy_pct": 4.51,
+
+    # Mercancías anual — marzo 2026 (INEGI, cuadro 1).
+    "inpc_mercancias_yoy_pct": 4.38,
+
+    # Expectativas inflación 12 meses — encuesta Banxico a analistas privados (may/2026).
+    # Los analistas elevaron su estimación de inflación general 2026 a 4.35 %.
+    "expectativas_inflacion_12m_pct": 4.35,
+
+    # USD/MXN — cierre del 5/may/2026 (Infobae / Dow Jones).
+    "usd_mxn": 17.38,
+
+    # PIB a/a — estimación oportuna 1T-2026 (INEGI): +0.2 % a/a.
+    # Consenso analistas privados para todo 2026: ~1.2 % (encuesta Banxico, may/2026).
+    "pib_yoy_pct": 0.2,
+
+    # Desempleo — marzo 2026, cifra desestacionalizada (ENOE/INEGI, 24/abr/2026).
+    "tasa_desempleo_pct": 2.8,
+
+    # Meta de inflación Banxico (sin cambio).
     "objetivo_inflacion_pct": 3.00,
-    "fuente": "Snapshot ilustrativo (actualizado mayo 2026) — configura BANXICO_TOKEN para datos en vivo",
+
+    "fuente": (
+        "Datos observados al 05-may-2026. "
+        "Fuentes: INEGI (INPC mar-2026, ENOE mar-2026, PIB 1T-2026 est. oportuna), "
+        "Banxico (decisión 26-mar-2026, encuesta analistas may-2026), "
+        "Fed FOMC (reunión 29-abr-2026), "
+        "Infobae/Dow Jones (USD/MXN cierre 05-may-2026)."
+    ),
 }
 
 
