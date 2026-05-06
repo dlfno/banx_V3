@@ -12,8 +12,15 @@ log = logging.getLogger(__name__)
 
 # Series del SIE de Banxico que se consultan en vivo cuando BANXICO_TOKEN está configurado.
 _SIE_BASE = "https://www.banxico.org.mx/SieAPIRest/service/v1"
-_SIE_RATES_SERIES = "SF61745,SF43718,SF43936,SL11578"   # tasa obj, USD/MXN, fed funds, desempleo
-_SIE_INPC_SERIES = "SP1,SP30577"                        # INPC general y subyacente (YoY vía incremento)
+# SF61745 = Tasa objetivo Banxico, SF43718 = USD/MXN FIX, SL11578 = Desempleo
+# (SF43936 NO se usa: es Cetes 28d, no Fed Funds — para Fed Funds usamos FRED.)
+_SIE_RATES_SERIES = "SF61745,SF43718,SL11578"
+# SP1 (INPC general índice, vía incremento=PorcAnual) + SP74662 (subyacente YoY ya pre-calculado)
+_SIE_INPC_GENERAL_SERIES = "SP1"
+_SIE_INPC_SUBYACENTE_SERIES = "SP74662"
+
+# FRED (St. Louis Fed) — endpoint público sin API key para series oficiales de la Fed.
+_FRED_FED_FUNDS_UPPER_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DFEDTARU"
 
 # Snapshot de respaldo con valores observados al 5 de mayo de 2026.
 # Se usa cuando BANXICO_TOKEN no está configurado o la API del SIE falla.
@@ -67,6 +74,27 @@ _MACRO_SNAPSHOT_FALLBACK: dict[str, Any] = {
 }
 
 
+def _fetch_fred_fed_funds_upper() -> float | None:
+    """Devuelve el último valor publicado por FRED para DFEDTARU (Fed Funds Target Range Upper).
+    Endpoint CSV público, no requiere API key. None si falla."""
+    try:
+        with httpx.Client(timeout=6.0) as client:
+            r = client.get(_FRED_FED_FUNDS_UPPER_URL)
+            r.raise_for_status()
+        # CSV header: "observation_date,DFEDTARU"; el último renglón con valor numérico es el más reciente.
+        for line in reversed(r.text.strip().splitlines()):
+            parts = line.split(",")
+            if len(parts) == 2 and parts[1] not in ("", "."):
+                try:
+                    return float(parts[1])
+                except ValueError:
+                    continue
+        return None
+    except Exception as exc:
+        log.warning("FRED Fed Funds no disponible: %s", exc)
+        return None
+
+
 def _fetch_sie_snapshot(token: str) -> dict | None:
     """Consulta la API REST del SIE de Banxico y devuelve un dict con los valores más recientes.
     Devuelve None si el token es inválido o la API no responde en 8 segundos."""
@@ -99,31 +127,46 @@ def _fetch_sie_snapshot(token: str) -> dict | None:
                         result["as_of"] = f"{y}-{m}-{d}"
                 elif sid == "SF43718":
                     result["usd_mxn"] = val
-                elif sid == "SF43936":
-                    result["fed_funds_upper_pct"] = val
                 elif sid == "SL11578":
                     result["tasa_desempleo_pct"] = val
 
-            # ── INPC variación anual ────────────────────────────────────────────────
+            # ── INPC general var. anual (vía SP1 + incremento=PorcAnual) ────────────
             r2 = client.get(
-                f"{_SIE_BASE}/series/{_SIE_INPC_SERIES}/datos/oportuno",
+                f"{_SIE_BASE}/series/{_SIE_INPC_GENERAL_SERIES}/datos/oportuno",
                 headers=headers,
                 params={"incremento": "PorcAnual"},
             )
             r2.raise_for_status()
             for serie in r2.json()["bmx"]["series"]:
-                sid = serie["idSerie"]
+                if serie["idSerie"] != "SP1":
+                    continue
                 datos = serie.get("datos") or []
                 if not datos:
                     continue
                 raw = datos[0].get("dato", "N/E")
-                if raw in ("N/E", ""):
+                if raw not in ("N/E", ""):
+                    result["inpc_yoy_pct"] = float(raw)
+
+            # ── INPC subyacente var. anual (SP74662 ya viene pre-calculada en %) ────
+            r3 = client.get(
+                f"{_SIE_BASE}/series/{_SIE_INPC_SUBYACENTE_SERIES}/datos/oportuno",
+                headers=headers,
+            )
+            r3.raise_for_status()
+            for serie in r3.json()["bmx"]["series"]:
+                if serie["idSerie"] != "SP74662":
                     continue
-                val = float(raw)
-                if sid == "SP1":
-                    result["inpc_yoy_pct"] = val
-                elif sid == "SP30577":
-                    result["inpc_subyacente_yoy_pct"] = val
+                datos = serie.get("datos") or []
+                if not datos:
+                    continue
+                raw = datos[0].get("dato", "N/E")
+                if raw not in ("N/E", ""):
+                    result["inpc_subyacente_yoy_pct"] = float(raw)
+
+        # ── Fed Funds (FRED, fuera del SIE) ─────────────────────────────────────────
+        fed = _fetch_fred_fed_funds_upper()
+        if fed is not None:
+            result["fed_funds_upper_pct"] = fed
 
         return result if result else None
 
@@ -143,7 +186,12 @@ def get_macro_snapshot() -> dict:
         live = _fetch_sie_snapshot(settings.BANXICO_TOKEN)
         if live:
             snapshot.update(live)
-            snapshot["fuente"] = "Banxico SIE API (datos en vivo)"
+            snapshot["fuente"] = (
+                "Datos en vivo: Banxico SIE (tasa objetivo, USD/MXN, INPC general y "
+                "subyacente, desempleo) + FRED St. Louis (Fed Funds upper). "
+                "Mercancías/servicios YoY, expectativas, PIB y meta toman valores del "
+                "snapshot observado al 5-may-2026."
+            )
         else:
             snapshot["fuente"] += " [SIE no disponible, usando respaldo]"
 
