@@ -121,7 +121,17 @@ async def run_meeting(
     await emit({"type": "decision", "decision_bps": decision})
 
     # Phase: minutes
-    minutes_md = await _generate_minutes(meeting.topic, transcript, votes, decision, agents)
+    try:
+        minutes_md = await asyncio.wait_for(
+            _generate_minutes(meeting.topic, transcript, votes, decision, agents),
+            timeout=300.0,
+        )
+        if not minutes_md.strip():
+            log.warning("Minuta vacía; usando fallback")
+            minutes_md = _fallback_minutes(meeting.topic, votes, decision, agents)
+    except Exception as exc:
+        log.error("Error generando minuta: %s", exc)
+        minutes_md = _fallback_minutes(meeting.topic, votes, decision, agents)
     meeting.minutes_md = minutes_md
     _persist_message(session, meeting_id, None, "secretario", "minutes", minutes_md)
     session.flush()
@@ -316,12 +326,28 @@ async def _generate_minutes(
         f"=== Transcripción completa ===\n{chr(10).join(transcript)}\n=== Fin ==="
     )
     model = build_chat_model(streaming=False, temperature=0.2)
-    resp = model.invoke([SystemMessage(content=secretary_prompt), HumanMessage(content=user_msg)])
+    resp = await model.ainvoke([SystemMessage(content=secretary_prompt), HumanMessage(content=user_msg)])
     if isinstance(resp.content, str):
         return resp.content
     if isinstance(resp.content, list):
         return "".join(b.get("text", "") for b in resp.content if isinstance(b, dict) and b.get("type") == "text")
     return str(resp.content)
+
+
+def _fallback_minutes(topic: str, votes: list[Vote], decision: int, agents: list[Agent]) -> str:
+    agent_by_id = {a.id: a for a in agents}
+    rows = "\n".join(
+        f"| {agent_by_id[v.agent_id].display_name} | {v.decision_bps:+d} bps | {v.rationale} |"
+        for v in votes
+        if v.agent_id in agent_by_id
+    )
+    return (
+        f"# Minuta — Junta de Gobierno Banxico\n\n"
+        f"## Tema\n{topic}\n\n"
+        f"## Votación\n| Miembro | Voto | Razón |\n|---|---|---|\n{rows}\n\n"
+        f"## Decisión final\n**{decision:+d} puntos base**\n\n"
+        f"*La minuta detallada no pudo generarse automáticamente en esta sesión.*"
+    )
 
 
 async def _pick_speakers_order(agents: list[Agent], transcript: list[str]) -> list[Agent]:
