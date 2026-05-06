@@ -18,14 +18,24 @@ export default function VoteTally({
   return (
     <div className="rounded-lg border border-stone-200 bg-white p-3">
       <h3 className="font-semibold text-sm mb-2">Votación</h3>
-      <ul className="text-sm space-y-1">
+      <ul className="text-sm space-y-2">
         {votes.map((v) => {
           const a = byId[v.agent_id];
+          const isFallback = v.rationale?.startsWith("Voto no parseable");
           return (
-            <li key={v.agent_id} className="flex items-baseline gap-2">
-              <span className="text-stone-500 w-6">{a?.avatar}</span>
-              <span className="flex-1 truncate">{v.agent}</span>
-              <span className="font-mono font-semibold">{formatBps(v.decision_bps)} bps</span>
+            <li key={v.agent_id}>
+              <div className="flex items-baseline gap-2">
+                <span className="text-stone-500 w-6">{a?.avatar}</span>
+                <span className="flex-1 truncate">{v.agent}</span>
+                <span className={`font-mono font-semibold ${isFallback ? "text-amber-600" : ""}`}>
+                  {formatBps(v.decision_bps)} bps
+                </span>
+              </div>
+              {v.rationale && (
+                <p className={`text-xs ml-8 mt-0.5 leading-snug ${isFallback ? "text-amber-600 italic" : "text-stone-400"}`}>
+                  {v.rationale}
+                </p>
+              )}
             </li>
           );
         })}

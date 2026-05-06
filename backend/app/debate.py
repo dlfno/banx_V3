@@ -23,6 +23,8 @@ from .tools import get_macro_snapshot
 EventEmitter = Callable[[dict], Awaitable[None]]
 
 VOTE_REGEX = re.compile(r"VOTO\s*:\s*([+\-]?\d{1,3})\s*(?:bps)?\s*[—\-:]\s*(.+)", re.IGNORECASE)
+# Regex secundario más permisivo: captura el número aunque falte el separador o haya markdown
+_VOTE_REGEX_LAX = re.compile(r"\*{0,2}VOTO\*{0,2}\s*:?\s*\*{0,2}([+\-]?\d{1,3})\*{0,2}\s*(?:bps)?", re.IGNORECASE)
 ALLOWED_BPS = {-50, -25, 0, 25, 50}
 
 
@@ -264,18 +266,29 @@ async def _collect_vote(
 def _parse_vote(text: str) -> tuple[int, str] | None:
     if not text:
         return None
+    # Intento primario: formato exacto con separador y razón
     m = VOTE_REGEX.search(text)
-    if not m:
-        return None
-    try:
-        bps = int(m.group(1))
-    except ValueError:
-        return None
-    if bps not in ALLOWED_BPS:
-        # Acepta múltiplos cercanos; redondea al permitido más cercano.
-        bps = min(ALLOWED_BPS, key=lambda x: abs(x - bps))
-    rationale = m.group(2).strip()
-    return bps, rationale
+    if m:
+        try:
+            bps = int(m.group(1))
+        except ValueError:
+            return None
+        if bps not in ALLOWED_BPS:
+            bps = min(ALLOWED_BPS, key=lambda x: abs(x - bps))
+        return bps, m.group(2).strip()
+    # Intento secundario: regex laxo (captura el número aunque falte separador o haya markdown)
+    m2 = _VOTE_REGEX_LAX.search(text)
+    if m2:
+        try:
+            bps = int(m2.group(1))
+        except ValueError:
+            return None
+        if bps not in ALLOWED_BPS:
+            bps = min(ALLOWED_BPS, key=lambda x: abs(x - bps))
+        # Extraer la razón: todo lo que sigue al match
+        rationale = text[m2.end():].strip().lstrip("—-:bps ").split("\n")[0][:200]
+        return bps, rationale or "Sin razón especificada"
+    return None
 
 
 def _resolve_decision(votes: list[Vote], agents: list[Agent]) -> int:
