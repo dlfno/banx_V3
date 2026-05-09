@@ -20,22 +20,33 @@ _SIE_RATES_SERIES = "SF61745,SF43718,SL11578"
 # SP1 (INPC general índice, vía incremento=PorcAnual) + SP74662 (subyacente YoY ya pre-calculado)
 _SIE_INPC_GENERAL_SERIES = "SP1"
 _SIE_INPC_SUBYACENTE_SERIES = "SP74662"
+# SI744 = Precio del Petróleo: Mezcla Mexicana (USD/barril, diario, fuente Pemex).
+# Tiene huecos N/E en fines de semana y días sin publicación; se busca el último
+# valor no-N/E mediante el endpoint /datos/{fechaInicio}/{fechaFin}.
+_SIE_MEZCLA_MX_SERIES = "SI744"
 
 # FRED (St. Louis Fed) — endpoint público CSV sin API key.
 # Mapa: campo del snapshot → ID de serie en FRED.
 #   DFEDTARU         = Federal Funds Target Range Upper (% diario)
-#   DCOILWTICO       = WTI Crude Oil Spot Price, Cushing (USD/bbl, diario)
-#   DCOILBRENTEU     = Brent Crude Spot Price, Europe (USD/bbl, diario)
 #   CPALTT01USM657N  = CPI USA, all items, YoY % (mensual, OECD)
-# Nota: la serie de Eurozona equivalente (CPALTT01EZM657N) NO existe en FRED.
-# CPI Eurozona se mantiene en el snapshot estático; los agentes pueden usar
-# web_search si necesitan el dato más reciente.
+# Nota: WTI y Brent se obtenían antes desde FRED (DCOILWTICO/DCOILBRENTEU) pero
+# ese feed tiene 3-5 días de lag. Ahora vienen de Yahoo Finance (cerca de
+# tiempo real durante horas de mercado).
+# La serie de Eurozona equivalente (CPALTT01EZM657N) NO existe en FRED;
+# CPI Eurozona se mantiene en el snapshot estático.
 _FRED_BASE = "https://fred.stlouisfed.org/graph/fredgraph.csv?id="
 _FRED_SERIES_MAP: dict[str, str] = {
     "fed_funds_upper_pct": "DFEDTARU",
-    "wti_usd_bbl": "DCOILWTICO",
-    "brent_usd_bbl": "DCOILBRENTEU",
     "inflacion_usa_yoy_pct": "CPALTT01USM657N",
+}
+
+# Yahoo Finance — JSON público para futures de commodities, sin API key.
+#   CL=F = WTI Crude Oil Front Month Future (USD/bbl, intraday)
+#   BZ=F = Brent Crude Oil Front Month Future (USD/bbl, intraday)
+_YAHOO_BASE = "https://query1.finance.yahoo.com/v8/finance/chart/"
+_YAHOO_SYMBOLS_MAP: dict[str, str] = {
+    "wti_usd_bbl": "CL=F",
+    "brent_usd_bbl": "BZ=F",
 }
 
 # Cache en memoria para el snapshot completo. Macro data no cambia minuto a minuto;
@@ -47,7 +58,7 @@ _SNAPSHOT_TTL_SECONDS = 300  # 5 minutos
 # Snapshot de respaldo con valores observados al 5 de mayo de 2026.
 # Se usa cuando BANXICO_TOKEN no está configurado o la API del SIE falla.
 _MACRO_SNAPSHOT_FALLBACK: dict[str, Any] = {
-    "as_of": "2026-05-05",
+    "as_of": "2026-05-09",
 
     # Banxico — última decisión 26/mar/2026 (recorte sorpresa a 6.75 %).
     # Se anticipa un posible recorte adicional a 6.50 % en la reunión de mayo.
@@ -86,14 +97,13 @@ _MACRO_SNAPSHOT_FALLBACK: dict[str, Any] = {
     # Meta de inflación Banxico (sin cambio).
     "objetivo_inflacion_pct": 3.00,
 
-    # ── Petróleo (referencia 06-may-2026) ──────────────────────────────────────
-    # WTI — West Texas Intermediate, Cushing OK (USD/barril).
-    "wti_usd_bbl": 62.50,
-    # Brent — Europa (USD/barril).
-    "brent_usd_bbl": 65.80,
-    # Mezcla Mexicana de exportación (USD/barril).
-    # Estimación: ~$8-10 USD por debajo del Brent (descuento histórico típico).
-    "mezcla_mx_usd_bbl": 54.20,
+    # ── Petróleo (referencia 09-may-2026) ──────────────────────────────────────
+    # WTI — West Texas Intermediate, Cushing OK (USD/barril). Fuente live: Yahoo CL=F.
+    "wti_usd_bbl": 95.42,
+    # Brent — Europa (USD/barril). Fuente live: Yahoo BZ=F.
+    "brent_usd_bbl": 101.29,
+    # Mezcla Mexicana de exportación (USD/barril). Fuente live: Banxico SIE SI744.
+    "mezcla_mx_usd_bbl": 98.50,
 
     # ── Inflación internacional (referencia mar-2026, último dato disponible) ──
     # CPI USA YoY — All Items (BLS, vía OECD/FRED).
@@ -102,12 +112,12 @@ _MACRO_SNAPSHOT_FALLBACK: dict[str, Any] = {
     "inflacion_eurozona_yoy_pct": 2.00,
 
     "fuente": (
-        "Datos observados al 06-may-2026. "
+        "Datos observados al 09-may-2026. "
         "Fuentes: INEGI (INPC mar-2026, ENOE mar-2026, PIB 1T-2026 est. oportuna), "
         "Banxico (decisión 26-mar-2026, encuesta analistas may-2026), "
         "Fed FOMC (reunión 29-abr-2026), "
-        "Infobae/Dow Jones (USD/MXN cierre 05-may-2026), "
-        "EIA/OPEC/Pemex (precios petróleo ref. 06-may-2026), "
+        "Banxico FIX (USD/MXN cierre 09-may-2026), "
+        "Yahoo Finance / oilprice.com (WTI, Brent, Mezcla MX al 09-may-2026), "
         "BLS y Eurostat vía OECD (CPI USA y Eurozona mar-2026)."
     ),
 }
@@ -135,6 +145,78 @@ def _fetch_fred_series(series_id: str) -> float | None:
         return None
     except Exception as exc:
         log.warning("FRED %s no disponible: %s", series_id, exc)
+        return None
+
+
+def _fetch_yahoo_quote(symbol: str) -> float | None:
+    """Devuelve el último precio de mercado regular para un símbolo de Yahoo Finance.
+    Endpoint JSON público sin API key. None si falla la red o el símbolo es inválido.
+
+    Usa `regularMarketPrice` del meta object (precio actual durante mercado, último
+    cierre fuera de horas). Si no está, walks back en el array `close` del histórico.
+    """
+    url = f"{_YAHOO_BASE}{symbol}?interval=1d&range=5d"
+    try:
+        with httpx.Client(timeout=6.0, headers={"User-Agent": "Mozilla/5.0"}) as client:
+            r = client.get(url)
+            r.raise_for_status()
+        data = r.json()
+        result = (data.get("chart") or {}).get("result") or []
+        if not result:
+            return None
+        meta = result[0].get("meta") or {}
+        price = meta.get("regularMarketPrice")
+        if price is not None:
+            return float(price)
+        # Fallback: último close válido del histórico.
+        closes = (
+            ((result[0].get("indicators") or {}).get("quote") or [{}])[0].get("close") or []
+        )
+        for v in reversed(closes):
+            if v is not None:
+                return float(v)
+        return None
+    except Exception as exc:
+        log.warning("Yahoo %s no disponible: %s", symbol, exc)
+        return None
+
+
+def _fetch_sie_latest(token: str, series_id: str, days_back: int = 14) -> tuple[float, str] | None:
+    """Trae los últimos `days_back` días de una serie del SIE y devuelve (valor, fecha)
+    del último dato no-N/E. None si no hay valores publicados en la ventana o falla la API.
+
+    Útil para series con publicación irregular (huecos en fines de semana o días sin
+    dato). El endpoint /datos/oportuno devuelve solo el último día programado, que
+    puede venir como N/E si Banxico aún no lo publica."""
+    from datetime import date, timedelta
+    fin = date.today()
+    ini = fin - timedelta(days=days_back)
+    url = f"{_SIE_BASE}/series/{series_id}/datos/{ini.isoformat()}/{fin.isoformat()}"
+    try:
+        r = httpx.get(
+            url,
+            headers={"Bmx-Token": token, "Accept": "application/json"},
+            timeout=8.0,
+        )
+        r.raise_for_status()
+        for serie in r.json()["bmx"]["series"]:
+            if serie["idSerie"] != series_id:
+                continue
+            datos = serie.get("datos") or []
+            for d in reversed(datos):
+                raw = d.get("dato", "N/E")
+                if raw in ("N/E", ""):
+                    continue
+                try:
+                    return float(raw), d.get("fecha", "")
+                except ValueError:
+                    continue
+        return None
+    except Exception as exc:
+        log.warning(
+            "SIE %s rango %s/%s no disponible: %s",
+            series_id, ini.isoformat(), fin.isoformat(), exc,
+        )
         return None
 
 
@@ -206,19 +288,36 @@ def _fetch_sie_snapshot(token: str) -> dict | None:
                 if raw not in ("N/E", ""):
                     result["inpc_subyacente_yoy_pct"] = float(raw)
 
-        # ── FRED: Fed Funds + petróleo (WTI, Brent) + CPI USA en paralelo ──────────
-        # Cada serie es best-effort: si una falla, las demás siguen y solo ese campo
-        # cae al fallback hardcoded. Se ejecutan en paralelo con un ThreadPoolExecutor
+        # ── Fuentes externas en paralelo ───────────────────────────────────────────
+        # FRED (Fed Funds, CPI USA), Yahoo Finance (WTI, Brent intra-day) y
+        # SIE Banxico (Mezcla Mexicana SI744 con búsqueda hacia atrás del último
+        # valor publicado). Cada fetch es best-effort: si falla, el campo cae
+        # al snapshot estático sin afectar a los demás. Todos corren en paralelo
         # para que el costo total sea ~max(timeouts) en vez de la suma.
-        with ThreadPoolExecutor(max_workers=len(_FRED_SERIES_MAP)) as pool:
-            futures = {
+        total_jobs = len(_FRED_SERIES_MAP) + len(_YAHOO_SYMBOLS_MAP) + 1  # +1 SI744
+        with ThreadPoolExecutor(max_workers=total_jobs) as pool:
+            fred_futs = {
                 field: pool.submit(_fetch_fred_series, sid)
                 for field, sid in _FRED_SERIES_MAP.items()
             }
-            for field, fut in futures.items():
+            yahoo_futs = {
+                field: pool.submit(_fetch_yahoo_quote, sym)
+                for field, sym in _YAHOO_SYMBOLS_MAP.items()
+            }
+            mezcla_fut = pool.submit(_fetch_sie_latest, token, _SIE_MEZCLA_MX_SERIES)
+
+            for field, fut in fred_futs.items():
                 val = fut.result()
                 if val is not None:
                     result[field] = val
+            for field, fut in yahoo_futs.items():
+                val = fut.result()
+                if val is not None:
+                    result[field] = val
+            mezcla_result = mezcla_fut.result()
+            if mezcla_result is not None:
+                value, _fecha = mezcla_result
+                result["mezcla_mx_usd_bbl"] = value
 
         return result if result else None
 
@@ -238,11 +337,11 @@ def _build_snapshot() -> dict:
             snapshot.update(live)
             snapshot["fuente"] = (
                 "Datos en vivo: Banxico SIE (tasa objetivo, USD/MXN, INPC general y "
-                "subyacente, desempleo) + FRED St. Louis (Fed Funds upper, WTI, Brent, "
-                "CPI USA YoY). "
-                "Mezcla Mexicana, CPI Eurozona, mercancías/servicios YoY, expectativas, "
-                "PIB y meta de inflación toman valores del snapshot observado al "
-                "6-may-2026."
+                "subyacente, desempleo, Mezcla Mexicana SI744) + Yahoo Finance "
+                "(WTI futures CL=F, Brent futures BZ=F) + FRED St. Louis (Fed Funds "
+                "upper, CPI USA YoY). "
+                "CPI Eurozona, mercancías/servicios YoY, expectativas, PIB y meta de "
+                "inflación toman valores del snapshot observado al 9-may-2026."
             )
             log.info("macro snapshot fresco en %.2fs (%d campos en vivo)", elapsed, len(live))
         else:
