@@ -357,7 +357,11 @@ async def _generate_minutes(
         transcript_chars, len(votes), len(agents), len(secretary_prompt) + len(user_msg),
     )
 
-    model = build_chat_model(streaming=False, temperature=0.2)
+    # max_tokens=6000: con modelos con extended thinking (Claude 4.x), el reasoning
+    # interno consume 1500-2500 tokens antes de empezar a escribir. La minuta visible
+    # son ~600 palabras (~1000 tokens). Con cap 2048 default, el modelo se cortaba
+    # antes de generar nada visible (finish_reason=length).
+    model = build_chat_model(streaming=False, temperature=0.2, max_tokens=6000)
     messages = [SystemMessage(content=secretary_prompt), HumanMessage(content=user_msg)]
 
     for attempt in range(2):
