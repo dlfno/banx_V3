@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import httpx
@@ -25,15 +27,22 @@ _SIE_INPC_SUBYACENTE_SERIES = "SP74662"
 #   DCOILWTICO       = WTI Crude Oil Spot Price, Cushing (USD/bbl, diario)
 #   DCOILBRENTEU     = Brent Crude Spot Price, Europe (USD/bbl, diario)
 #   CPALTT01USM657N  = CPI USA, all items, YoY % (mensual, OECD)
-#   CPALTT01EZM657N  = CPI Euro area, all items, YoY % (mensual, OECD)
+# Nota: la serie de Eurozona equivalente (CPALTT01EZM657N) NO existe en FRED.
+# CPI Eurozona se mantiene en el snapshot estático; los agentes pueden usar
+# web_search si necesitan el dato más reciente.
 _FRED_BASE = "https://fred.stlouisfed.org/graph/fredgraph.csv?id="
 _FRED_SERIES_MAP: dict[str, str] = {
     "fed_funds_upper_pct": "DFEDTARU",
     "wti_usd_bbl": "DCOILWTICO",
     "brent_usd_bbl": "DCOILBRENTEU",
     "inflacion_usa_yoy_pct": "CPALTT01USM657N",
-    "inflacion_eurozona_yoy_pct": "CPALTT01EZM657N",
 }
+
+# Cache en memoria para el snapshot completo. Macro data no cambia minuto a minuto;
+# en una junta los 5 agentes consultan el mismo snapshot, así una sola red trip
+# basta para todos los turnos dentro de la ventana TTL.
+_SNAPSHOT_CACHE: dict[str, Any] = {"data": None, "expires_at": 0.0}
+_SNAPSHOT_TTL_SECONDS = 300  # 5 minutos
 
 # Snapshot de respaldo con valores observados al 5 de mayo de 2026.
 # Se usa cuando BANXICO_TOKEN no está configurado o la API del SIE falla.
@@ -197,13 +206,19 @@ def _fetch_sie_snapshot(token: str) -> dict | None:
                 if raw not in ("N/E", ""):
                     result["inpc_subyacente_yoy_pct"] = float(raw)
 
-        # ── FRED: Fed Funds + petróleo (WTI, Brent) + CPI USA y Eurozona ───────────
+        # ── FRED: Fed Funds + petróleo (WTI, Brent) + CPI USA en paralelo ──────────
         # Cada serie es best-effort: si una falla, las demás siguen y solo ese campo
-        # cae al fallback hardcoded.
-        for field, series_id in _FRED_SERIES_MAP.items():
-            val = _fetch_fred_series(series_id)
-            if val is not None:
-                result[field] = val
+        # cae al fallback hardcoded. Se ejecutan en paralelo con un ThreadPoolExecutor
+        # para que el costo total sea ~max(timeouts) en vez de la suma.
+        with ThreadPoolExecutor(max_workers=len(_FRED_SERIES_MAP)) as pool:
+            futures = {
+                field: pool.submit(_fetch_fred_series, sid)
+                for field, sid in _FRED_SERIES_MAP.items()
+            }
+            for field, fut in futures.items():
+                val = fut.result()
+                if val is not None:
+                    result[field] = val
 
         return result if result else None
 
@@ -212,29 +227,45 @@ def _fetch_sie_snapshot(token: str) -> dict | None:
         return None
 
 
+def _build_snapshot() -> dict:
+    """Construye un snapshot fresco combinando fallback estático + datos en vivo."""
+    snapshot = dict(_MACRO_SNAPSHOT_FALLBACK)
+    if settings.BANXICO_TOKEN:
+        t0 = time.perf_counter()
+        live = _fetch_sie_snapshot(settings.BANXICO_TOKEN)
+        elapsed = time.perf_counter() - t0
+        if live:
+            snapshot.update(live)
+            snapshot["fuente"] = (
+                "Datos en vivo: Banxico SIE (tasa objetivo, USD/MXN, INPC general y "
+                "subyacente, desempleo) + FRED St. Louis (Fed Funds upper, WTI, Brent, "
+                "CPI USA YoY). "
+                "Mezcla Mexicana, CPI Eurozona, mercancías/servicios YoY, expectativas, "
+                "PIB y meta de inflación toman valores del snapshot observado al "
+                "6-may-2026."
+            )
+            log.info("macro snapshot fresco en %.2fs (%d campos en vivo)", elapsed, len(live))
+        else:
+            snapshot["fuente"] += " [SIE no disponible, usando respaldo]"
+            log.warning("macro snapshot: SIE no respondió en %.2fs", elapsed)
+    return snapshot
+
+
 @tool("get_macro_snapshot", return_direct=False)
 def get_macro_snapshot() -> dict:
     """Devuelve un snapshot reciente de variables macro relevantes para la decisión de política monetaria
     (tasa Banxico, Fed Funds, INPC México headline/subyacente, expectativas, USD/MXN, PIB, desempleo,
     precios del petróleo WTI/Brent/Mezcla MX, y CPI YoY de USA y Eurozona).
     Úsala antes de argumentar para anclar tus cifras."""
-    snapshot = dict(_MACRO_SNAPSHOT_FALLBACK)
-
-    if settings.BANXICO_TOKEN:
-        live = _fetch_sie_snapshot(settings.BANXICO_TOKEN)
-        if live:
-            snapshot.update(live)
-            snapshot["fuente"] = (
-                "Datos en vivo: Banxico SIE (tasa objetivo, USD/MXN, INPC general y "
-                "subyacente, desempleo) + FRED St. Louis (Fed Funds upper, WTI, Brent, "
-                "CPI USA y Eurozona YoY). "
-                "Mezcla Mexicana, mercancías/servicios YoY, expectativas, PIB y meta "
-                "de inflación toman valores del snapshot observado al 6-may-2026."
-            )
-        else:
-            snapshot["fuente"] += " [SIE no disponible, usando respaldo]"
-
-    return snapshot
+    now = time.time()
+    cached = _SNAPSHOT_CACHE.get("data")
+    if cached and now < _SNAPSHOT_CACHE.get("expires_at", 0):
+        # Devolvemos copia para que el caller no mute el cache compartido.
+        return dict(cached)
+    snapshot = _build_snapshot()
+    _SNAPSHOT_CACHE["data"] = snapshot
+    _SNAPSHOT_CACHE["expires_at"] = now + _SNAPSHOT_TTL_SECONDS
+    return dict(snapshot)
 
 
 @tool("calculator", return_direct=False)
