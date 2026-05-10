@@ -111,7 +111,7 @@ export default function HomePage() {
                     to={`/meeting/${m.id}`}
                     className="block institutional-card p-3 hover:border-accent-500 hover:shadow-md transition"
                   >
-                    <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center justify-between gap-2 pr-7">
                       <span className="font-medium truncate text-banxico-700">
                         {m.topic}
                       </span>
@@ -152,36 +152,34 @@ export default function HomePage() {
                       </span>
                     </div>
                   </Link>
-                  {m.decision_bps === null && (
-                    confirmId === m.id ? (
-                      <div className="absolute inset-0 rounded-lg border border-red-300 bg-red-50 flex items-center justify-center gap-3 text-sm">
-                        <span className="text-red-700 font-medium">¿Eliminar esta junta?</span>
-                        <button
-                          onClick={() => deleteMutation.mutate(m.id)}
-                          disabled={deleteMutation.isPending}
-                          className="px-3 py-1 rounded bg-red-600 text-white hover:bg-red-700 disabled:opacity-50"
-                        >
-                          {deleteMutation.isPending ? "…" : "Sí, eliminar"}
-                        </button>
-                        <button
-                          onClick={() => setConfirmId(null)}
-                          className="px-3 py-1 rounded border border-stone-300 bg-white hover:bg-stone-50"
-                        >
-                          Cancelar
-                        </button>
-                      </div>
-                    ) : (
+                  {confirmId === m.id ? (
+                    <div className="absolute inset-0 rounded-lg border border-red-300 bg-red-50 flex items-center justify-center gap-3 text-sm">
+                      <span className="text-red-700 font-medium">¿Eliminar esta junta?</span>
                       <button
-                        onClick={(e) => {
-                          e.preventDefault();
-                          setConfirmId(m.id);
-                        }}
-                        title="Descartar junta en curso"
-                        className="absolute top-2 right-2 w-6 h-6 flex items-center justify-center rounded-full text-stone-400 hover:bg-red-100 hover:text-red-600 transition text-xs leading-none"
+                        onClick={() => deleteMutation.mutate(m.id)}
+                        disabled={deleteMutation.isPending}
+                        className="px-3 py-1 rounded bg-red-600 text-white hover:bg-red-700 disabled:opacity-50"
                       >
-                        ✕
+                        {deleteMutation.isPending ? "…" : "Sí, eliminar"}
                       </button>
-                    )
+                      <button
+                        onClick={() => setConfirmId(null)}
+                        className="px-3 py-1 rounded border border-stone-300 bg-white hover:bg-stone-50"
+                      >
+                        Cancelar
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={(e) => {
+                        e.preventDefault();
+                        setConfirmId(m.id);
+                      }}
+                      title={m.decision_bps === null ? "Descartar junta en curso" : "Eliminar junta"}
+                      className="absolute top-2 right-2 w-6 h-6 flex items-center justify-center rounded-full text-stone-400 hover:bg-red-100 hover:text-red-600 transition text-xs leading-none"
+                    >
+                      ✕
+                    </button>
                   )}
                 </li>
               ))}
