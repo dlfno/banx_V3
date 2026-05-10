@@ -8,4 +8,5 @@
 **/dist
 backend/banxico.db
 backend/.env
-data/
+# Solo la carpeta raíz ./data/ (volumen SQLite local). NO backend/app/data/.
+/data/

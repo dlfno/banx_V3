@@ -4,8 +4,9 @@ import asyncio
 import json
 import logging
 import re
+from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable
 
 AGENT_TURN_TIMEOUT = 900.0  # 15 minutos por turno de agente
 
@@ -15,6 +16,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from sqlalchemy.orm import Session
 
 from .agent_runtime import run_agent
+from .banxico_context import get_institutional_context
 from .llm import build_chat_model
 from .memory import load_agent_context, summarize_for_agent
 from .models import Agent, Meeting, Message, Vote
@@ -26,6 +28,124 @@ VOTE_REGEX = re.compile(r"VOTO\s*:\s*([+\-]?\d{1,3})\s*(?:bps)?\s*[—\-:]\s*(.+
 # Regex secundario más permisivo: captura el número aunque falte el separador o haya markdown
 _VOTE_REGEX_LAX = re.compile(r"\*{0,2}VOTO\*{0,2}\s*:?\s*\*{0,2}([+\-]?\d{1,3})\*{0,2}\s*(?:bps)?", re.IGNORECASE)
 ALLOWED_BPS = {-50, -25, 0, 25, 50}
+
+
+# ── Scratchpad de herramientas compartido en una junta ──────────────────────
+# Cada llamada a una herramienta y su resultado se acumula aquí. Antes de cada
+# turno de agente, el scratchpad se formatea como SystemMessage adicional para
+# que los agentes posteriores reusen los datos en vez de re-llamar.
+# Reduce queries duplicadas a Tavily, latencia y costos.
+
+# Campos del macro snapshot que mostramos en el resumen (los más usados en debate).
+_MACRO_KEY_FIELDS = (
+    "as_of",
+    "banxico_target_rate_pct",
+    "fed_funds_upper_pct",
+    "inpc_yoy_pct",
+    "inpc_subyacente_yoy_pct",
+    "expectativas_inflacion_12m_pct",
+    "usd_mxn",
+    "wti_usd_bbl",
+    "brent_usd_bbl",
+    "mezcla_mx_usd_bbl",
+    "tasa_desempleo_pct",
+    "pib_yoy_pct",
+)
+
+
+@dataclass
+class ScratchpadEntry:
+    agent_name: str
+    phase: str
+    tool_name: str
+    args: dict
+    output_summary: str = field(default="")
+
+
+def _summarize_tool_output(name: str, output: Any) -> str:
+    """Resume el output de una herramienta en una representación compacta para el
+    scratchpad. Devuelve un string corto y legible."""
+    text = output if isinstance(output, str) else str(output)
+
+    if name == "get_macro_snapshot":
+        # El output suele ser dict serializado a JSON. Extraemos campos clave.
+        try:
+            data = json.loads(text) if isinstance(text, str) else text
+            if isinstance(data, dict):
+                kvs = []
+                for k in _MACRO_KEY_FIELDS:
+                    if k in data:
+                        v = data[k]
+                        kvs.append(f"{k}={v}")
+                return ", ".join(kvs) if kvs else text[:300]
+        except Exception:
+            pass
+        return text[:300]
+
+    if name == "web_search":
+        # web_search devuelve líneas tipo "- Título\n  URL\n  contenido". Truncamos
+        # cada bloque y mostramos top 3 resultados.
+        blocks: list[str] = []
+        current: list[str] = []
+        for line in text.splitlines():
+            if line.startswith("- "):
+                if current:
+                    blocks.append(" ".join(current))
+                current = [line[2:].strip()]
+            elif line.strip():
+                current.append(line.strip())
+        if current:
+            blocks.append(" ".join(current))
+        top = blocks[:3]
+        truncated = [(b[:200] + "…") if len(b) > 200 else b for b in top]
+        more = f" (+{len(blocks)-3} resultados omitidos)" if len(blocks) > 3 else ""
+        return "\n  ".join(truncated) + more if truncated else text[:300]
+
+    if name == "calculator":
+        return text.strip()[:200]
+
+    if name == "consult_banxico_history":
+        # Output: "[fuente: ...]\n<párrafo>\n\n[fuente: ...]\n<párrafo>..." (hasta 3).
+        # Para el scratchpad mostramos la línea de fuente del primero y un snippet
+        # del párrafo, indicando cuántos bloques más se devolvieron.
+        blocks = [b for b in text.split("\n\n") if b.strip()]
+        if not blocks:
+            return text[:200]
+        first = blocks[0]
+        head, _, body = first.partition("\n")
+        snippet = (body[:180] + "…") if len(body) > 180 else body
+        more = f" (+{len(blocks)-1} bloques)" if len(blocks) > 1 else ""
+        return f"{head}\n  {snippet}{more}"
+
+    return text[:300]
+
+
+def format_scratchpad(entries: list[ScratchpadEntry]) -> str:
+    """Formatea el scratchpad como un SystemMessage en markdown para inyectar
+    en el convo de un turno de agente. Vacío si no hay entradas."""
+    if not entries:
+        return ""
+    lines = [
+        "=== Caja de herramientas (resultados ya disponibles en esta junta) ===",
+        "ANTES de invocar una herramienta, revisa si los datos que necesitas ya",
+        "están aquí. Si están, úsalos directamente y cita al miembro como referencia",
+        "(ej. \"según consultó la Subgobernadora Vega…\"). Evita llamadas duplicadas.",
+        "",
+    ]
+    for e in entries:
+        args_str = ""
+        if e.args:
+            try:
+                args_str = json.dumps(e.args, ensure_ascii=False)
+            except Exception:
+                args_str = str(e.args)
+        head = f"[{e.agent_name} · {e.phase}] {e.tool_name}({args_str})"
+        lines.append(head)
+        # Indenta el resumen para legibilidad.
+        for sub in e.output_summary.splitlines() or [e.output_summary]:
+            lines.append(f"  → {sub}" if sub else "")
+        lines.append("")
+    return "\n".join(lines).rstrip()
 
 
 async def run_meeting(
@@ -56,6 +176,9 @@ async def run_meeting(
     await emit({"type": "phase", "phase": "setup", "content": agenda})
 
     transcript: list[str] = [f"[Moderador] {agenda}"]
+    # Scratchpad compartido: cada llamada a herramienta + su resultado, accesible
+    # a los agentes posteriores para evitar redundancia. Se mutará en _agent_turn.
+    scratchpad: list[ScratchpadEntry] = []
 
     # Phase: openings
     for agent in agents:
@@ -70,6 +193,7 @@ async def run_meeting(
                 "No emitas tu voto todavía."
             ),
             transcript=transcript,
+            scratchpad=scratchpad,
             emit=emit,
         )
         entry = text.strip() or f"[{agent.display_name} no emitió posición inicial]"
@@ -89,6 +213,7 @@ async def run_meeting(
                     "y por qué. Sé específico con datos. Máximo 180 palabras. No votes aún."
                 ),
                 transcript=transcript,
+                scratchpad=scratchpad,
                 emit=emit,
             )
             entry = text.strip() or f"[{agent.display_name} no emitió posición en esta ronda]"
@@ -98,7 +223,7 @@ async def run_meeting(
     votes: list[Vote] = []
     for agent in agents:
         decision_bps, rationale = await _collect_vote(
-            session, meeting_id, agent, transcript=transcript, emit=emit
+            session, meeting_id, agent, transcript=transcript, scratchpad=scratchpad, emit=emit
         )
         v = Vote(meeting_id=meeting_id, agent_id=agent.id, decision_bps=decision_bps, rationale=rationale)
         session.add(v)
@@ -161,13 +286,24 @@ async def _agent_turn(
     phase: str,
     instruction: str,
     transcript: list[str],
+    scratchpad: list[ScratchpadEntry] | None = None,
     emit: EventEmitter,
 ) -> str:
     context = load_agent_context(session, agent.id)
     convo: list[BaseMessage] = [SystemMessage(content=agent.system_prompt)]
     if context:
         convo.append(SystemMessage(content=context))
+    # Contexto institucional Banxico: resumen de las decisiones reales recientes,
+    # postura de los miembros, balance de riesgos. Aterriza el razonamiento de
+    # los agentes en datos oficiales en lugar de invenciones.
+    convo.append(SystemMessage(content=get_institutional_context()))
     convo.append(SystemMessage(content="Transcripción del debate hasta ahora:\n" + "\n".join(transcript)))
+    # Inyecta scratchpad de herramientas YA consultadas en la junta — los agentes
+    # posteriores leen esto antes de decidir si vuelven a llamar una herramienta.
+    if scratchpad:
+        scratch_md = format_scratchpad(scratchpad)
+        if scratch_md:
+            convo.append(SystemMessage(content=scratch_md))
     convo.append(HumanMessage(content=instruction))
 
     await emit({"type": "turn_start", "agent_id": agent.id, "agent": agent.display_name, "phase": phase})
@@ -204,6 +340,19 @@ async def _agent_turn(
         session.flush()
         return placeholder
 
+    # Acumula los tool calls de este turno en el scratchpad para los siguientes turnos.
+    if scratchpad is not None and last_result.tool_results:
+        for tr in last_result.tool_results:
+            scratchpad.append(
+                ScratchpadEntry(
+                    agent_name=agent.display_name,
+                    phase=phase,
+                    tool_name=tr.get("name", "?"),
+                    args=tr.get("args") or {},
+                    output_summary=_summarize_tool_output(tr.get("name", ""), tr.get("output", "")),
+                )
+            )
+
     final_text = last_result.text.strip() or f"[{agent.display_name} no emitió posición]"
     _persist_message(
         session,
@@ -224,6 +373,7 @@ async def _collect_vote(
     agent: Agent,
     *,
     transcript: list[str],
+    scratchpad: list[ScratchpadEntry] | None = None,
     emit: EventEmitter,
 ) -> tuple[int, str]:
     instruction = (
@@ -238,6 +388,7 @@ async def _collect_vote(
         phase="vote",
         instruction=instruction,
         transcript=transcript,
+        scratchpad=scratchpad,
         emit=emit,
     )
     parsed = _parse_vote(text)
@@ -254,6 +405,7 @@ async def _collect_vote(
                 "con <bps> ∈ {-50, -25, 0, +25, +50}."
             ),
             transcript=transcript + [f"[{agent.display_name}] {text}"],
+            scratchpad=scratchpad,
             emit=emit,
         )
         parsed = _parse_vote(retry)

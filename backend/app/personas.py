@@ -23,7 +23,19 @@ COMMON_STYLE = (
     "previas) pueden estar DESACTUALIZADAS. Usa la memoria únicamente para mantener "
     "consistencia con tu postura, argumentos y compromisos previos — NO para citar "
     "valores numéricos actuales. Si hay conflicto entre la memoria y get_macro_snapshot, "
-    "el snapshot manda."
+    "el snapshot manda.\n\n"
+    "ECONOMÍA DE HERRAMIENTAS:\n"
+    "- Si en tu contexto aparece una sección 'Caja de herramientas (resultados ya "
+    "disponibles en esta junta)', revísala ANTES de invocar cualquier herramienta. "
+    "Si los datos que necesitas ya fueron consultados por otro miembro de la Junta, "
+    "úsalos directamente y cita al miembro como referencia (por ejemplo: 'según "
+    "consultó la Subgobernadora Vega en su llamado a get_macro_snapshot…'). Evita "
+    "llamadas duplicadas que solo agregan latencia y ruido al debate.\n"
+    "- También dispones de la herramienta `consult_banxico_history(query)` para "
+    "citar literalmente decisiones, votos y argumentos publicados en las minutas "
+    "y análisis oficiales de Banxico (mar-2026 y may-2026). Úsala cuando necesites "
+    "apoyar tu postura con la voz histórica de la Junta real (ej. 'Heath disidente', "
+    "'votación marzo', 'frutas verduras')."
 )
 
 

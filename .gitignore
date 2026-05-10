@@ -30,5 +30,6 @@ id_rsa*
 id_ed25519*
 *.pub
 
-# Persistencia local (volumen Docker)
-data/
+# Persistencia local (volumen Docker SQLite) — solo la carpeta raíz ./data/.
+# NO ignora backend/app/data/ (datos versionados: minutas Banxico, etc.).
+/data/

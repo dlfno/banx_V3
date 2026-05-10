@@ -18,6 +18,13 @@ class RunResult:
     text: str
     tool_calls: list[dict]
     messages: list[BaseMessage]
+    # Tool calls con su output. Cada entry: {name, args, id, output}.
+    # Permite construir un scratchpad compartido entre turnos sin reparsear messages.
+    tool_results: list[dict] = None  # type: ignore[assignment]
+
+    def __post_init__(self):
+        if self.tool_results is None:
+            self.tool_results = []
 
 
 EventEmitter = Callable[[dict], Awaitable[None]]
@@ -41,6 +48,7 @@ async def run_agent(
     bound = model.bind_tools(ALL_TOOLS) if use_tools else model
     convo: list[BaseMessage] = list(messages)
     accumulated_tool_calls: list[dict] = []
+    accumulated_tool_results: list[dict] = []
     final_text = ""
 
     for _ in range(max_iters):
@@ -100,6 +108,9 @@ async def run_agent(
                     output = str(output)
             if emit:
                 await emit({"type": "tool_end", "name": name, "id": tool_call_id, "output": output})
+            accumulated_tool_results.append(
+                {"name": name, "args": args, "id": tool_call_id, "output": output}
+            )
             convo.append(ToolMessage(content=output, tool_call_id=tool_call_id))
     else:
         # Hit max_iters without natural stop; find last AIMessage with non-empty text.
@@ -113,7 +124,12 @@ async def run_agent(
     if emit:
         await emit({"type": "final", "text": final_text})
 
-    return RunResult(text=final_text, tool_calls=accumulated_tool_calls, messages=convo)
+    return RunResult(
+        text=final_text,
+        tool_calls=accumulated_tool_calls,
+        messages=convo,
+        tool_results=accumulated_tool_results,
+    )
 
 
 def _content_text(content) -> str:

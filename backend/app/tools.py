@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -407,7 +410,103 @@ def web_search(query: str) -> str:
         return f"web_search error: {exc}"
 
 
-ALL_TOOLS = [get_macro_snapshot, calculator, web_search]
+# ── consult_banxico_history ────────────────────────────────────────────────
+# Búsqueda por keywords sobre los .md de minutas y análisis oficiales de
+# Banxico (carpeta backend/app/data/banxico_history/). Sin red trip.
+
+_BANXICO_HISTORY_DIR = Path(__file__).resolve().parent / "data" / "banxico_history"
+# Cache: {filename: [paragraph, ...]} cargado al primer uso.
+_BANXICO_HISTORY_CACHE: dict[str, list[str]] = {}
+
+
+def _strip_accents(text: str) -> str:
+    """Quita acentos para búsqueda case/diacrítico-insensitiva."""
+    nfkd = unicodedata.normalize("NFKD", text)
+    return "".join(c for c in nfkd if not unicodedata.combining(c))
+
+
+def _normalize(text: str) -> str:
+    return _strip_accents(text.lower())
+
+
+def _load_banxico_history() -> dict[str, list[str]]:
+    """Carga (con cache) todos los .md del directorio history como listas de
+    párrafos. Un párrafo es un bloque separado por línea(s) en blanco."""
+    if _BANXICO_HISTORY_CACHE:
+        return _BANXICO_HISTORY_CACHE
+    if not _BANXICO_HISTORY_DIR.is_dir():
+        log.warning("Carpeta banxico_history no existe: %s", _BANXICO_HISTORY_DIR)
+        return {}
+    for md in sorted(_BANXICO_HISTORY_DIR.glob("*.md")):
+        try:
+            text = md.read_text(encoding="utf-8")
+        except Exception as exc:
+            log.warning("No se pudo leer %s: %s", md.name, exc)
+            continue
+        # Quitamos front-matter YAML si existe.
+        if text.startswith("---"):
+            parts = text.split("---", 2)
+            if len(parts) >= 3:
+                text = parts[2]
+        paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+        _BANXICO_HISTORY_CACHE[md.name] = paragraphs
+    return _BANXICO_HISTORY_CACHE
+
+
+@tool("consult_banxico_history", return_direct=False)
+def consult_banxico_history(query: str) -> str:
+    """Consulta las minutas y análisis oficiales recientes de la Junta de Gobierno
+    de Banxico (decisiones de política monetaria de mar-2026 y may-2026).
+    Devuelve los párrafos más relevantes para tu consulta, con cita de la fuente
+    y la fecha. Útil para citar literalmente decisiones, votos, argumentos de
+    miembros disidentes (Heath, Borja Gómez), pronósticos o el balance de riesgos.
+
+    Recomendación: usa palabras clave concretas (nombres de miembros, conceptos
+    macro, fechas, instrumentos). Ejemplos: "Heath disidencia", "votación marzo",
+    "frutas verduras jitomate", "Medio Oriente petróleo"."""
+    docs = _load_banxico_history()
+    if not docs:
+        return "No hay minutas disponibles en la base de conocimiento."
+
+    norm_query = _normalize(query)
+    keywords = [w for w in re.split(r"\W+", norm_query) if len(w) >= 3]
+    if not keywords:
+        return (
+            "Query muy corta o vacía. Usa al menos una palabra clave de 3+ letras "
+            "(ej. 'Heath disidente', 'votación marzo', 'frutas verduras')."
+        )
+
+    # Score cada párrafo: cuántos keywords distintos aparecen, ponderado por
+    # densidad (matches / longitud aprox del párrafo en palabras).
+    scored: list[tuple[float, str, str]] = []
+    for fname, paragraphs in docs.items():
+        for para in paragraphs:
+            norm_para = _normalize(para)
+            matches = sum(1 for kw in keywords if kw in norm_para)
+            if matches == 0:
+                continue
+            words = max(len(norm_para.split()), 1)
+            density = matches / (words ** 0.5)  # raíz para no penalizar tanto los párrafos largos
+            scored.append((density, fname, para))
+
+    if not scored:
+        return (
+            f"No se encontraron pasajes que coincidan con: '{query}'. "
+            "Probar palabras clave distintas (nombres de miembros, conceptos macro, fechas)."
+        )
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    top = scored[:3]
+    out_lines: list[str] = []
+    for _score, fname, para in top:
+        # fname suele ser '2026-05-07_decision.md' → extrae fecha legible.
+        m = re.match(r"(\d{4}-\d{2}-\d{2})", fname)
+        fecha = m.group(1) if m else fname
+        out_lines.append(f"[fuente: {fname} · {fecha}]\n{para}")
+    return "\n\n".join(out_lines)
+
+
+ALL_TOOLS = [get_macro_snapshot, calculator, web_search, consult_banxico_history]
 
 
 def tools_by_name() -> dict:
