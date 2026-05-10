@@ -363,7 +363,7 @@ export default function WorldMapPage() {
     <div>
       {/* Encabezado */}
       <div className="bg-white border-b border-sand-200">
-        <div className="max-w-7xl mx-auto px-6 py-6">
+        <div className="max-w-[1800px] mx-auto px-6 py-6">
           <div className="text-[10px] uppercase tracking-[0.22em] text-accent-600 font-semibold mb-1">
             Contexto global
           </div>
@@ -376,9 +376,9 @@ export default function WorldMapPage() {
         </div>
       </div>
 
-      <div className="max-w-7xl mx-auto px-4 md:px-6 py-6 grid grid-cols-12 gap-4">
+      <div className="max-w-[1800px] mx-auto px-4 md:px-6 py-6 grid grid-cols-12 gap-4">
         {/* Panel de control */}
-        <aside className="col-span-12 lg:col-span-3 space-y-4">
+        <aside className="col-span-12 lg:col-span-3 xl:col-span-2 space-y-4">
           <div className="institutional-card p-4">
             <h3 className="section-title mb-3">Colorear el mapa por</h3>
             <div className="space-y-1.5">
@@ -504,7 +504,7 @@ export default function WorldMapPage() {
         </aside>
 
         {/* Mapa */}
-        <section className="col-span-12 lg:col-span-9">
+        <section className="col-span-12 lg:col-span-9 xl:col-span-10">
           <div className="institutional-card overflow-hidden">
             <div className="px-5 py-3 bg-banxico-700 text-white border-b-2 border-accent-600 flex items-center justify-between">
               <span className="font-serif text-base">
